@@ -3,7 +3,12 @@
 #include "tonewheel_phase_inc_table.h"
 #include "wavetable_sin_12bits.h"
 
+#define NOTE_OFFSET 12  //Offset entre a  primeira tecla do teclado (C2) e a primeira roda de tom (C1)
+
 uint32_t phases[91] = {0};  // fase inicial de cada roda de tom
+byte keyboard[61] = {0};  // estado de cada tecla (0 ou 1)
+uint8_t drawbars[9] = {8,0,8,0,0,0,0,0,0};  // posição de cada drawbar (0 a 8)
+int drawbar_map[9] = {-12, 7, 0, 12, 19, 24, 28, 31, 36};  // mapeamento de cada drawbar para as rodas de tom correspondentes
 
 // GPIOs
 static constexpr int PIN_I2S_BCLK = 4;  // Pino BCK no módulo PCM5102, também conhecido como SCK ou CLK
@@ -11,8 +16,8 @@ static constexpr int PIN_I2S_WS   = 5;  // Pino LCK no módulo PCM5102, também 
 static constexpr int PIN_I2S_DOUT = 6;  // Pino DIN, no módulo PCM5102, também conhecido como SDOUT ou SD
 
 // áudio
-static constexpr uint32_t SAMPLE_RATE = 48000;
-static constexpr size_t FRAMES_PER_BUFFER = 256;
+static constexpr uint32_t SAMPLE_RATE = 48000;    // taxa de amostragem em Hz. O PCM5102 suporta até 384kHz, mas 48kHz é uma escolha comum para áudio de alta qualidade e é mais fácil de processar em tempo real.
+static constexpr size_t FRAMES_PER_BUFFER = 256;  // número de frames (amostras por canal) por buffer de áudio. O tamanho do buffer em bytes será FRAMES_PER_BUFFER * 2 (estéreo) * 2 (16 bits por amostra)
 
 int16_t audioBuffer[FRAMES_PER_BUFFER * 2];  // estéreo intercalado
 
@@ -63,22 +68,47 @@ void setup() {
   }
 
   Serial.println("I2S iniciado");
+
+  keyboard[33] = 1;  // Pressiona a tecla A4 (lá de 440Hz)
 }
 
 
 void loop() {
+  byte keyboard_cache[61];
+  memcpy(keyboard_cache, keyboard, sizeof(keyboard_cache));
+
   for (size_t n = 0; n < FRAMES_PER_BUFFER; n++) {
 
     for (int i = 0; i < 91; i++) {
       phases[i] += tonewheel_phase_inc[i];
     }
 
-    int16_t index = (phases[45] >> 20) & 0x0FFF;
-    int16_t sample = wavetable_sin_4096[index];
+    int64_t sample = 0;
 
+    for (int key = 0; key < 61; key++) {
 
-    audioBuffer[2 * n + 0] = sample; // L
-    audioBuffer[2 * n + 1] = sample; // R
+      if (keyboard_cache[key]) {
+        for(int db = 0; db < 9; db++) {
+          int tw_index = key + NOTE_OFFSET + drawbar_map[db];
+
+          if (tw_index >= 0 && tw_index < 91) {            
+            int16_t wave = wavetable_sin_4096[(phases[tw_index] >> 20) & 0x0FFF];
+            sample += (int32_t)wave * drawbars[db];
+          }
+        }
+      }
+    }
+
+    sample >>= 5;
+
+    // Saturação para int16_t
+    if (sample > 32767) sample = 32767;
+    else if (sample < -32768) sample = -32768;
+
+    int16_t out = (int16_t)sample;
+
+    audioBuffer[2 * n + 0] = out; // L
+    audioBuffer[2 * n + 1] = out; // R
   }
 
   size_t bytes_written = 0;
